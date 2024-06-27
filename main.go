@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -68,12 +73,67 @@ func generateSHA1Hash(data string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Function to decrypt data using a passphrase
+func decrypt(data string, passphrase string) ([]byte, error) {
+	ciphertext, _ := base64.URLEncoding.DecodeString(data)
+	key := []byte(PadKey(passphrase))
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(ciphertext) < nonceSize {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+
+	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
+	return gcm.Open(nil, nonce, ciphertext, nil)
+}
+
 func main() {
 	bucketName := "android-flutter-artifacts" // Replace with your GCS bucket name
 
-	// Create a storage client
+	// Read the passphrase from environment variable
+	passphrase := os.Getenv("DECRYPTION_PASSPHRASE")
+	if passphrase == "" {
+		log.Fatal("DECRYPTION_PASSPHRASE environment variable not set")
+	}
+
+	// Read and decrypt the credentials file
+	encryptedData, err := ioutil.ReadFile("credentials.json.enc")
+	if err != nil {
+		log.Fatalf("Failed to read encrypted credentials file: %v", err)
+	}
+
+	decryptedData, err := decrypt(string(encryptedData), passphrase)
+	if err != nil {
+		log.Fatalf("Failed to decrypt credentials file: %v", err)
+	}
+
+	// Write the decrypted data to a temp file
+	tempFile, err := ioutil.TempFile("", "credentials-*.json")
+	if err != nil {
+		log.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tempFile.Name())
+
+	if _, err := tempFile.Write(decryptedData); err != nil {
+		log.Fatalf("Failed to write decrypted data to temp file: %v", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		log.Fatalf("Failed to close temp file: %v", err)
+	}
+
+	// Create a storage client with the decrypted credentials
 	ctx := context.Background()
-	client, err := storage.NewClient(ctx, option.WithCredentialsFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
+	client, err := storage.NewClient(ctx, option.WithCredentialsFile(tempFile.Name()))
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
@@ -86,7 +146,7 @@ func main() {
 
 		data, err := downloadFromGCS(ctx, client, bucketName, requestedPath)
 		if err != nil {
-			if err == storage.ErrObjectNotExist {
+			if errors.Is(err, storage.ErrObjectNotExist) {
 				log.Printf("File not found: %s", requestedPath)
 				http.NotFound(w, r)
 			} else {
@@ -172,5 +232,10 @@ func main() {
 	})
 
 	log.Println("Starting server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", port), nil))
 }
