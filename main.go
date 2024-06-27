@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"cloud.google.com/go/storage"
@@ -72,7 +73,7 @@ func main() {
 
 	// Create a storage client
 	ctx := context.Background()
-	client, err := storage.NewClient(ctx, option.WithCredentialsFile("credentials.json"))
+	client, err := storage.NewClient(ctx, option.WithCredentialsFile(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")))
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
