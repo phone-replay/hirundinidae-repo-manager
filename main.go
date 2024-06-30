@@ -20,9 +20,7 @@ import (
 	"google.golang.org/api/option"
 )
 
-// Function to generate the POM file content
 func generatePOMContent(groupId, artifactId, version string) string {
-	// Replace slashes with dots in groupId
 	groupId = strings.ReplaceAll(groupId, "/", ".")
 	return fmt.Sprintf(`<project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -35,7 +33,6 @@ func generatePOMContent(groupId, artifactId, version string) string {
 </project>`, groupId, artifactId, version)
 }
 
-// Function to upload a file to GCS
 func uploadToGCS(ctx context.Context, client *storage.Client, bucketName, objectName string, file io.Reader) error {
 	bucket := client.Bucket(bucketName)
 	obj := bucket.Object(objectName)
@@ -49,7 +46,6 @@ func uploadToGCS(ctx context.Context, client *storage.Client, bucketName, object
 	return nil
 }
 
-// Function to download a file from GCS
 func downloadFromGCS(ctx context.Context, client *storage.Client, bucketName, objectName string) ([]byte, error) {
 	bucket := client.Bucket(bucketName)
 	obj := bucket.Object(objectName)
@@ -66,14 +62,12 @@ func downloadFromGCS(ctx context.Context, client *storage.Client, bucketName, ob
 	return data, nil
 }
 
-// Function to generate SHA1 hash for a string
 func generateSHA1Hash(data string) string {
 	h := sha1.New()
 	h.Write([]byte(data))
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// Function to decrypt data using a passphrase
 func decrypt(data string, passphrase string) ([]byte, error) {
 	ciphertext, _ := base64.URLEncoding.DecodeString(data)
 	key := []byte(PadKey(passphrase))
@@ -98,15 +92,12 @@ func decrypt(data string, passphrase string) ([]byte, error) {
 }
 
 func main() {
-	bucketName := "android-flutter-artifacts" // Replace with your GCS bucket name
-
 	// Read the passphrase from environment variable
 	passphrase := os.Getenv("DECRYPTION_PASSPHRASE")
 	if passphrase == "" {
 		log.Fatal("DECRYPTION_PASSPHRASE environment variable not set")
 	}
 
-	// Read and decrypt the credentials file
 	encryptedData, err := ioutil.ReadFile("credentials.json.enc")
 	if err != nil {
 		log.Fatalf("Failed to read encrypted credentials file: %v", err)
@@ -117,7 +108,6 @@ func main() {
 		log.Fatalf("Failed to decrypt credentials file: %v", err)
 	}
 
-	// Write the decrypted data to a temp file
 	tempFile, err := ioutil.TempFile("", "credentials-*.json")
 	if err != nil {
 		log.Fatalf("Failed to create temp file: %v", err)
@@ -131,7 +121,6 @@ func main() {
 		log.Fatalf("Failed to close temp file: %v", err)
 	}
 
-	// Create a storage client with the decrypted credentials
 	ctx := context.Background()
 	client, err := storage.NewClient(ctx, option.WithCredentialsFile(tempFile.Name()))
 	if err != nil {
@@ -139,8 +128,9 @@ func main() {
 	}
 	defer client.Close()
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		requestedPath := r.URL.Path[1:] // Remove the leading '/'
+	http.HandleFunc("/flutter/release/", func(w http.ResponseWriter, r *http.Request) {
+		requestedPath := r.URL.Path[len("/flutter/release/"):]
+		bucketName := "android-flutter-artifacts"
 
 		log.Printf("Received request: %s", r.URL.Path)
 
@@ -156,7 +146,6 @@ func main() {
 			return
 		}
 
-		// Serve the file data
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Write(data)
 	})
@@ -167,7 +156,7 @@ func main() {
 			return
 		}
 
-		err := r.ParseMultipartForm(10 << 20) // 10 MB limit
+		err := r.ParseMultipartForm(10 << 20)
 		if err != nil {
 			http.Error(w, "Error parsing form", http.StatusBadRequest)
 			return
@@ -183,36 +172,44 @@ func main() {
 		groupID := r.FormValue("groupID")
 		artifactID := r.FormValue("artifactID")
 		version := r.FormValue("version")
-		if groupID == "" || artifactID == "" || version == "" {
-			http.Error(w, "groupID, artifactID, and version are required", http.StatusBadRequest)
+		bucketName := r.FormValue("bucketName")
+
+		if groupID == "" {
+			http.Error(w, "groupID is required", http.StatusBadRequest)
+			return
+		}
+		if artifactID == "" {
+			http.Error(w, "artifactID is required", http.StatusBadRequest)
+			return
+		}
+		if version == "" {
+			http.Error(w, "version is required", http.StatusBadRequest)
+			return
+		}
+		if bucketName == "" {
+			http.Error(w, "bucketName is required", http.StatusBadRequest)
 			return
 		}
 
-		// Replace dots in groupID for GCS compatibility
 		groupIDPath := strings.ReplaceAll(groupID, ".", "/")
 
-		// Define the destination paths for GCS
 		aarDestPath := fmt.Sprintf("%s/%s/%s/%s-%s.aar", groupIDPath, artifactID, version, artifactID, version)
 		pomDestPath := fmt.Sprintf("%s/%s/%s/%s-%s.pom", groupIDPath, artifactID, version, artifactID, version)
 
-		// Upload .aar file to GCS
 		err = uploadToGCS(ctx, client, bucketName, aarDestPath, aarFile)
 		if err != nil {
 			http.Error(w, "Error uploading .aar file to GCS", http.StatusInternalServerError)
 			return
 		}
 
-		// Generate the POM file content
 		pomContent := generatePOMContent(groupID, artifactID, version)
 
-		// Upload the POM file to GCS
 		err = uploadToGCS(ctx, client, bucketName, pomDestPath, strings.NewReader(pomContent))
 		if err != nil {
 			http.Error(w, "Error uploading POM file to GCS", http.StatusInternalServerError)
 			return
 		}
 
-		// Generate and upload SHA1 files
 		aarSHA1 := generateSHA1Hash(aarDestPath)
 		pomSHA1 := generateSHA1Hash(pomContent)
 
